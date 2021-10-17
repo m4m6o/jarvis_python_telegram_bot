@@ -1,0 +1,7 @@
+﻿SpeechRecognition==3.8.1
+comtypes==1.1.10
+ffmpeg==1.4
+pyTelegramBotAPI==4.1.1
+pydub==0.25.1
+uuid==1.30
+yandex-music==1.0.0

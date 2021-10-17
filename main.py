@@ -4,23 +4,26 @@ import os
 import speech_recognition as sr
 from telebot import types
 from pydub import AudioSegment
-import pyttsx3
 import pprint
+from random import randint
+from comtypes.client import CreateObject
 
+from search import search
+from likes_playlist import download_random_track
 from config import *
 
 
+engine = CreateObject("SAPI.SpVoice")
 bot = tb.TeleBot(TOKEN)
 r = sr.Recognizer()                              # для обработки аудио
 AudioSegment.converter = absolute_path_to_ffmpeg # необходимая строка, т.к. мы изменили путь к ffmpeg
-speak_engine = pyttsx3.init("sapi5")             # для "генерации" аудио
-voices = speak_engine.getProperty('voices')      # массив голосов. Необходимо при условии установленного RHVoice, увеличивающий количество допустимых голосов
 
-# клавиатура для выбора голоса озвучивания
+# клавиатура выбора способа запроса музыки
 keyboard1 = types.InlineKeyboardMarkup()
-for i in range(len(voices)): # используем цикл чтобы избежать ошибки индексации
-    key_v = types.InlineKeyboardButton(text=i, callback_data=f'voice{i}')
-    keyboard1.add(key_v)
+key_1 = types.InlineKeyboardButton(text='Авторизоваться и воспроизвести плейлист "Мне нравится"', callback_data='auth')
+key_2 = types.InlineKeyboardButton(text='Поиск по названию', callback_data='search')
+keyboard1.add(key_1)
+keyboard1.add(key_2)
 # клавиатура да/нет (по факту бесполезная, но добавленна чтоб не было навязчевого флуда)
 keyboard2 = types.InlineKeyboardMarkup()
 key_yes = types.InlineKeyboardButton(text='Да', callback_data='yes')
@@ -32,9 +35,14 @@ key_a_to_t = types.InlineKeyboardButton(text='Голосовое сообщен�
 key_t_to_a = types.InlineKeyboardButton(text='Озвучить текстовое сообщение', callback_data='command2')
 key_music  = types.InlineKeyboardButton(text='Хочу послушать музыку', callback_data='command3')
 key_talk   = types.InlineKeyboardButton(text='А давай-ка поговорим', callback_data='command4')
-keyboard3.add(key_a_to_t, key_t_to_a, key_music, key_talk)
+keyboard3.add(key_a_to_t)
+keyboard3.add(key_t_to_a)
+keyboard3.add(key_music)
+keyboard3.add(key_talk)
 
-recording = False
+recording   = False
+searching   = False
+authorising = False
 
 def audio_to_text(filename):
     with sr.AudioFile(filename) as source:
@@ -51,6 +59,33 @@ def audio_to_text(filename):
             print('Error')
             return "Упс, ошибочка... попробуй ещё раз..."
 
+def text_to_wav(eingabe, ausgabe, text_aus_datei = True, geschwindigkeit = 2, Stimmenname = "Anna"):
+
+    engine.rate = geschwindigkeit # von -10 bis 10
+
+    for stimme in engine.GetVoices():
+        print(stimme.GetDescription())
+        if stimme.GetDescription().find(Stimmenname) >= 0:
+            engine.Voice = stimme
+            break
+    else:
+        print("Fehler Stimme nicht gefunden -> Standard wird benutzt")
+
+    if text_aus_datei:
+        datei = open(eingabe, 'r')
+        text = datei.read()
+        datei.close()
+    else:
+        text = eingabe
+
+    stream = CreateObject("SAPI.SpFileStream")
+    from comtypes.gen import SpeechLib
+
+    stream.Open(ausgabe, SpeechLib.SSFMCreateForWrite)
+    engine.AudioOutputStream = stream
+    engine.speak(text)
+
+    stream.Close()
 
 @bot.message_handler(content_types=['voice'])
 def audio_to_text_processing(message):
@@ -77,24 +112,35 @@ def audio_to_text_processing(message):
 @bot.message_handler(content_types=['text'])
 def get_text_message(message):
 
-    global recording
+    global recording, searching, authorising
     if recording:
 
-        global speak_engine
-
         recording = False
-        file_path = "record.wav"
-        file_path1 = "record.ogg"
         # преобразуем message в речь и сохраняем
         print(message.text)
-        speak_engine.save_to_file(message.text, "record.wav")
-        speak_engine.runAndWait()
-        speak_engine.stop()
+        file_path = str(uuid.uuid4()) + ".wav"
+        text_to_wav(message.text, file_path, False)
         # отправляем результат
         result = open(file_path, 'rb')
         bot.send_audio(message.from_user.id, result)
         result.close()
-        # os.remove(file_path)
+        os.remove(file_path)
+
+    elif searching:
+
+        # поиск результата
+        searching = False
+        bot.send_message(message.from_user.id, search(message.text))
+
+    elif authorising:
+
+        authorising = False
+        # авторизация и возвращение случайного трека из "мне нравится"
+        mail, password = message.text.split()
+        file_path = "music/" + str(uuid.uuid4()) + ".wav"
+        download_random_track(mail, password, file_path)
+        bot.send_audio(message.from_user.id, file_path)
+
 
     elif 'привет' in message.text.lower(): # предполагается второй и последующие вызовы get_info
 
@@ -120,6 +166,16 @@ def callback_worker(call):
         bot.send_message(call.message.chat.id, "Жаль")
         bot.send_sticker(call.message.chat.id, open('static/sad_sti.webp', 'rb'))
 
+    elif call.data == 'auth':
+
+        recording, searching, authorising = False, False, True
+        bot.send_message(call.message.chat.id, "Введи свой логин и пароль (Пример: example@yandex.com password)")
+
+    elif call.data == 'search':
+
+        recording, searching, authorising = False, True, False
+        bot.send_message(call.message.chat.id, "Введи название трека/исполнителя/альбома/плейлиста")
+
     elif call.data.startswith('command'):
 
         if call.data == 'command1':
@@ -127,25 +183,18 @@ def callback_worker(call):
 
         elif call.data == 'command2':
 
-            global keyboard1
-            bot.send_message(call.message.chat.id, "Выбери голос для озвучивания:", reply_markup=keyboard1)
+            # ожидание сообщения от пользователя
+            recording, searching, authorising = True, False, False
+            bot.send_message(call.message.chat.id, "Отправь мне текст. Работает только с инглиш лангуаге")
 
         elif call.data == 'command3':
-            pass
+
+            # выбор между поиском и "мне нравится"
+            global keyboard1
+            bot.send_message(call.message.chat.id, "Выбери один из способов воспроизведения музыки", reply_markup=keyboard1)
 
         elif call.data == 'command4':
             bot.register_next_step_handler(call.message, get_text_message)
-
-    elif call.data.startswith('voice'):
-        # выбираем необходимый голос
-        global speak_engine
-        speak_engine.setProperty('voice', 'ru')
-        speak_engine.setProperty('voice', voices[int(str(call.data)[5:])].id)
-        speak_engine.setProperty('rate', 110)
-        # ожидание сообщения от пользователя
-        global recording
-        recording = True
-        bot.send_message(call.message.chat.id, "Отправь мне текст")
 
 
 @bot.message_handler(commands=['start'])
