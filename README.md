@@ -16,3 +16,6 @@ Jarvis может:
 ```sh
 pip install -r requirements.txt
 ```
+
+При использовании виртуальных окружений необходимо поменять в `config.py` путь к ffmpeg.
+Гайдик для установки: https://www.youtube.com/watch?v=r1AtmY-RMyQ&t=269s
